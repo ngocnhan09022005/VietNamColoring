@@ -1,5 +1,5 @@
 ﻿"""Complete search: backtracking, forward checking, or AC-3/MAC."""
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from time import perf_counter
 from .csp import CSP
@@ -20,12 +20,14 @@ class Result:
     trace_truncated: bool = False
 
 
-def solve(csp, algorithm="AC-3 (MAC)", *, timeout=10, trace_limit=1500):
+def solve(csp, algorithm="AC-3 (MAC)", *, timeout=10, trace_limit=1500,
+          require_all_colors=False):
     if algorithm not in ALGORITHMS:
         raise ValueError("Unknown algorithm")
     result = Result()
     start = perf_counter()
     assignment = {}
+    required_colors = {c for domain in csp.domains.values() for c in domain} if require_all_colors else set()
 
     def check_time():
         if perf_counter() - start >= timeout:
@@ -38,7 +40,6 @@ def solve(csp, algorithm="AC-3 (MAC)", *, timeout=10, trace_limit=1500):
                                      domains={v: list(d) for v, d in domains.items()}))
         else:
             result.trace_truncated = True
-
     def propagate(domains, queue):
         while queue:
             check_time()
@@ -54,8 +55,12 @@ def solve(csp, algorithm="AC-3 (MAC)", *, timeout=10, trace_limit=1500):
                 queue.extend((n, a) for n in csp.neighbors[a] if n != b)
         return True
 
+
     def search(domains):
         check_time()
+        missing = required_colors - set(assignment.values())
+        if len(missing) > len(csp.variables) - len(assignment):
+            return None
         if len(assignment) == len(csp.variables):
             return assignment.copy()
         # Same MRV + degree ordering for a fair comparison.
@@ -63,7 +68,11 @@ def solve(csp, algorithm="AC-3 (MAC)", *, timeout=10, trace_limit=1500):
                  for v in csp.variables if v not in assignment}
         v = min(legal, key=lambda n: (len(legal[n]),
                 -sum(x not in assignment for x in csp.neighbors[n]), n))
-        for color in legal[v]:
+        # Spread colors across provinces while retaining every legal branch.
+        # Unused colors naturally come first, including in exact-color mode.
+        usage = Counter(assignment.values())
+        choices = sorted(legal[v], key=lambda color: usage[color])
+        for color in choices:
             result.nodes += 1
             assignment[v] = color
             child = {n: list(d) for n, d in domains.items()}
@@ -99,7 +108,8 @@ def solve(csp, algorithm="AC-3 (MAC)", *, timeout=10, trace_limit=1500):
         if ok:
             result.solution = search(domains)
         if result.solution is not None:
-            if not csp.validate(result.solution):
+            if (not csp.validate(result.solution)
+                    or not required_colors.issubset(result.solution.values())):
                 raise RuntimeError("Invalid coloring returned")
             result.status = "solved"
     except TimeoutError:

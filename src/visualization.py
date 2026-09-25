@@ -17,7 +17,7 @@ def map_html(geojson, coloring, neighbors, active=None):
         title = escape(f"{name} | {coloring.get(name, 'Chưa gán')} | Giáp: {', '.join(neighbors[name])}")
         stroke = "#111827" if name == active else "#64748b"
         weight = 2.5 if name == active else 0.65
-        paths.append(f'<path d="{" ".join(commands)}" fill="{color}" stroke="{stroke}" stroke-width="{weight}" fill-rule="evenodd" tabindex="0"><title>{title}</title></path>')
+        paths.append(f'<path data-province="{escape(name, quote=True)}" aria-label="{escape(name, quote=True)}" d="{" ".join(commands)}" fill="{color}" stroke="{stroke}" stroke-width="{weight}" fill-rule="evenodd" tabindex="0"><title>{title}</title></path>')
     legend = "".join(f'<span><i style="background:{h}"></i>{c}</span>' for c, h in COLOR_HEX.items() if c in coloring.values())
     return """<!doctype html><html lang="vi"><meta charset="utf-8">
 <style>

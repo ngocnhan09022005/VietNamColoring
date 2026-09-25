@@ -5,7 +5,39 @@ import streamlit as st
 from src.csp import CSP
 from src.data import GEOJSON, VARIABLES, NEIGHBORS, COLORS
 from src.solver import ALGORITHMS, solve, minimum_coloring
-from src.visualization import map_html
+from src.interactive_map import MAP_JS, interactive_map
+from src.selection import selected_graph, toggle_province
+
+map_component = st.components.v2.component(
+    "province_selection_map", html='<div id="root"></div>', js=MAP_JS,
+)
+
+
+def clear_results():
+    st.session_state.runs = None
+    st.session_state.comparison = None
+    st.session_state.pop("step", None)
+
+
+def reset_selection():
+    st.session_state.selected_provinces = []
+    clear_results()
+
+
+def change_province_count():
+    st.session_state.selected_provinces = (
+        VARIABLES.copy() if st.session_state.province_count == len(VARIABLES) else []
+    )
+    clear_results()
+
+
+def map_clicked():
+    province = st.session_state["province_map"].get("clicked")
+    previous = st.session_state.selected_provinces
+    selected = toggle_province(previous, province, st.session_state.province_count, VARIABLES)
+    if selected != previous:
+        st.session_state.selected_provinces = selected
+        clear_results()
 
 
 def render_table(rows, *, height=None):
@@ -39,19 +71,38 @@ st.title("Tô màu bản đồ Việt Nam")
 st.caption("Chủ đề 11 · Bài toán thỏa mãn ràng buộc (CSP) · Bộ dữ liệu 34 tỉnh/thành trong project")
 st.session_state.setdefault("runs", None)
 st.session_state.setdefault("comparison", None)
+st.session_state.setdefault("selected_provinces", VARIABLES.copy())
 
 with st.sidebar:
     st.header("Thiết lập")
     algorithm = st.selectbox("Thuật toán", ALGORITHMS, index=2)
     mode = st.radio("Mục tiêu", ["Tìm số màu tối thiểu", "Thử số màu cố định"])
-    k = st.slider("Số màu thử", 1, 5, 4, disabled=mode == "Tìm số màu tối thiểu")
+    k = st.slider("Số màu thử", 1, len(COLORS), 10, disabled=mode == "Tìm số màu tối thiểu")
+    st.caption("Chế độ cố định dùng đủ số màu đã chọn (tối đa 10 màu). Chế độ tối thiểu tìm ít màu nhất.")
+    province_count = st.number_input("Số tỉnh/thành thử", min_value=1, max_value=len(VARIABLES),
+                                     value=len(VARIABLES), step=1, key="province_count",
+                                     on_change=change_province_count)
+    st.caption("Chọn 34 tỉnh để tự động chọn toàn bộ bản đồ.")
+    selected = st.session_state.selected_provinces
+    ready = len(selected) == province_count
+    st.caption(f"Đã chọn {len(selected)}/{province_count} tỉnh. Bấm vào bản đồ để chọn hoặc bỏ chọn.")
+    if not ready:
+        st.info(f"Chọn thêm {province_count - len(selected)} tỉnh trên bản đồ để chạy.")
+    too_many_colors = k > province_count
+    if too_many_colors and mode == "Thử số màu cố định":
+        st.warning("Để dùng đủ số màu đã chọn, số tỉnh phải ít nhất bằng số màu. Hãy giảm số màu hoặc tăng số tỉnh.")
     timeout = st.slider("Giới hạn mỗi lượt (giây)", 1, 30, 10)
-    run = st.button("Chạy thuật toán", type="primary", width="stretch")
-    compare = st.button("So sánh 3 thuật toán", width="stretch")
-    st.caption("So sánh dùng số màu thử; cùng MRV và ưu tiên bậc lớn. Thời gian có tính ghi nhật ký.")
+    run = st.button("Chạy thuật toán", type="primary", width="stretch",
+                    disabled=not ready or (too_many_colors and mode == "Thử số màu cố định"))
+    compare = st.button("So sánh 3 thuật toán", width="stretch", disabled=not ready or too_many_colors)
+    st.button("Bỏ chọn tất cả", on_click=reset_selection, width="stretch")
+    if selected:
+        st.caption("Đã chọn: " + ", ".join(selected))
+    st.caption("So sánh dùng đủ số màu thử trên các tỉnh đã chọn; số màu không được vượt số tỉnh. Cùng MRV và ưu tiên bậc lớn.")
     st.info("AC-3 lọc miền giá trị. Để tìm nghiệm hoàn chỉnh, ứng dụng kết hợp AC-3 với quay lui (MAC).")
 
-config = (algorithm, mode, k, timeout)
+variables, neighbors = selected_graph(selected, VARIABLES, NEIGHBORS)
+config = (algorithm, mode, k, timeout, tuple(variables), "balanced-colors")
 if st.session_state.get("config") != config:
     st.session_state.runs = None
     st.session_state.comparison = None
@@ -60,10 +111,10 @@ if st.session_state.get("config") != config:
 if run:
     with st.spinner("Đang tìm kiếm và kiểm tra ràng buộc…"):
         if mode == "Tìm số màu tối thiểu":
-            runs = minimum_coloring(VARIABLES, NEIGHBORS, COLORS, algorithm, timeout=timeout)
+            runs = minimum_coloring(variables, neighbors, COLORS, algorithm, timeout=timeout)
         else:
-            csp = CSP(VARIABLES, {v: COLORS[:k] for v in VARIABLES}, NEIGHBORS)
-            runs = [(k, solve(csp, algorithm, timeout=timeout))]
+            csp = CSP(variables, {v: COLORS[:k] for v in variables}, neighbors)
+            runs = [(k, solve(csp, algorithm, timeout=timeout, require_all_colors=True))]
         st.session_state.runs = runs
         st.session_state.pop("step", None)
 
@@ -71,8 +122,8 @@ if compare:
     with st.spinner("Đang chạy trên cùng dữ liệu…"):
         rows = []
         for name in ALGORITHMS:
-            result = solve(CSP(VARIABLES, {v: COLORS[:k] for v in VARIABLES}, NEIGHBORS),
-                           name, timeout=timeout)
+            result = solve(CSP(variables, {v: COLORS[:k] for v in variables}, neighbors),
+                           name, timeout=timeout, require_all_colors=True)
             rows.append({"Thuật toán": name, "Số màu thử": k, "Trạng thái": result.status,
                          "Thời gian (ms)": round(result.seconds * 1000, 3),
                          "Lần gán": result.nodes, "Quay lui": result.backtracks,
@@ -80,8 +131,8 @@ if compare:
         st.session_state.comparison = rows
 
 cols = st.columns(3)
-cols[0].metric("Tỉnh / thành", len(VARIABLES))
-cols[1].metric("Cặp giáp ranh trong GeoJSON", sum(map(len, NEIGHBORS.values())) // 2)
+cols[0].metric("Tỉnh / thành đã chọn", f"{len(variables)}/{province_count}")
+cols[1].metric("Cặp giáp ranh trong nhóm đã chọn", sum(map(len, neighbors.values())) // 2)
 cols[2].metric("Ràng buộc", "Hai tỉnh giáp nhau khác màu")
 
 map_tab, detail_tab, theory_tab = st.tabs(["Bản đồ & từng bước", "Dữ liệu & so sánh", "Thuật toán & hướng dẫn"])
@@ -92,16 +143,18 @@ with map_tab:
         last_k, result = runs[-1]
         if result.status == "solved":
             if mode == "Tìm số màu tối thiểu":
-                st.success(f"Số màu tối thiểu của đồ thị dữ liệu: {last_k}. Đã loại trừ tất cả số màu nhỏ hơn.")
+                st.success(f"Số màu tối thiểu của {len(variables)} tỉnh đã chọn: {last_k}. Đã loại trừ tất cả số màu nhỏ hơn.")
             else:
-                st.success(f"Nghiệm hợp lệ với {len(set(result.solution.values()))} màu được dùng trong {last_k} màu cho phép.")
-            st.caption("Đã kiểm tra đủ tỉnh, màu thuộc miền và mọi cặp giáp ranh khác màu.")
+                st.success(f"Nghiệm hợp lệ, đã dùng đủ {last_k} màu đã chọn.")
+            st.caption("Đã kiểm tra đủ các tỉnh đã chọn, màu thuộc miền và mọi cặp giáp ranh trong nhóm khác màu.")
             coloring = result.solution
             st.download_button("Tải kết quả JSON", json.dumps({
                 "algorithm": algorithm, "mode": mode, "colors_allowed": last_k,
                 "minimum_proven": mode == "Tìm số màu tối thiểu",
+                "require_all_colors": mode == "Thử số màu cố định",
                 "dataset": "assets/vietnam_provinces.geojson (corrected names)",
-                "solution": coloring, "neighbors": NEIGHBORS
+                "selected_provinces": variables,
+                "solution": coloring, "neighbors": neighbors
             }, ensure_ascii=False, indent=2), "coloring.json", "application/json")
         elif result.status == "timeout":
             st.warning("Đã hết thời gian. Chưa thể kết luận vô nghiệm hoặc số màu tối thiểu.")
@@ -124,29 +177,32 @@ with map_tab:
             st.write(f"**{event['event']}** · {active or 'Toàn bộ đồ thị'}")
             render_table([{"Tỉnh": v, "Màu đã gán": coloring.get(v, "—"),
                            "Miền đang lưu": ", ".join(event["domains"][v]) or "∅"}
-                          for v in VARIABLES], height=230)
+                          for v in variables], height=230)
     else:
-        st.info("Chọn thuật toán rồi nhấn Chạy. Bản đồ ban đầu chưa gán màu.")
-    st.iframe(map_html(GEOJSON, coloring, NEIGHBORS, active), height=680)
+        st.info("Chọn đủ số tỉnh bằng cách bấm bản đồ, rồi nhấn Chạy thuật toán. Bấm lại một tỉnh để bỏ chọn.")
+    st.caption("Tỉnh đã chọn có viền xanh đậm; tỉnh ngoài nhóm hiển thị mờ và không tham gia bài toán.")
+    interactive_map(map_component, GEOJSON, coloring, NEIGHBORS, active, selected, province_count, map_clicked)
     with st.container(border=True):
         st.markdown("#### Giải thích bản đồ")
         st.markdown("""
 - Mỗi vùng trên bản đồ đại diện cho một **tỉnh hoặc thành phố** trong bộ dữ liệu.
-- Các màu **đỏ, xanh lá, xanh dương, vàng và tím** là màu do thuật toán CSP gán; hai tỉnh có chung đường biên phải mang màu khác nhau.
+- Bảng màu gồm **đỏ, xanh lá, xanh dương, vàng, tím, cam, hồng, xanh ngọc, nâu và ô liu**; hai tỉnh có chung đường biên phải mang màu khác nhau.
 - Vùng **màu xám** là tỉnh chưa được gán màu. Khi xem từng bước, tỉnh đang được xử lý có **đường viền đậm**.
+- Chọn số tỉnh ở thanh bên rồi bấm vào bản đồ để chọn đúng số lượng. Chỉ các tỉnh đã chọn và các cạnh giáp ranh giữa chúng tham gia thuật toán; tỉnh ngoài nhóm được làm mờ.
 - Rê chuột lên một tỉnh để xem tên, màu đã gán và danh sách các tỉnh giáp ranh. Có thể dùng các nút **+**, **−**, **Toàn bản đồ** hoặc kéo bản đồ để quan sát.
 
 Kết quả tô màu phản ánh quan hệ giáp ranh được trích từ tệp GeoJSON của project, không thể hiện vùng miền, dân số hoặc đơn vị hành chính theo màu.
 """)
 
 with detail_tab:
-    st.subheader("Đồ thị ràng buộc")
+    st.subheader("Đồ thị ràng buộc của nhóm đã chọn")
     st.caption("Hai vùng có chung đoạn biên trong GeoJSON được coi là giáp ranh; tiếp xúc tại một điểm không tạo cạnh.")
-    province = st.selectbox("Tra cứu tỉnh / thành", sorted(VARIABLES))
-    st.write(", ".join(NEIGHBORS[province]) or "Không có hàng xóm trong dữ liệu.")
-    render_table([{"Tỉnh / thành": v, "Bậc": len(NEIGHBORS[v]),
-                   "Giáp ranh": ", ".join(NEIGHBORS[v])} for v in VARIABLES])
-    st.download_button("Tải danh sách giáp ranh", json.dumps(NEIGHBORS, ensure_ascii=False, indent=2),
+    province = st.selectbox("Tra cứu tỉnh / thành", sorted(variables))
+    if province:
+        st.write(", ".join(neighbors[province]) or "Không có hàng xóm trong nhóm đã chọn.")
+    render_table([{"Tỉnh / thành": v, "Bậc": len(neighbors[v]),
+                   "Giáp ranh": ", ".join(neighbors[v])} for v in variables])
+    st.download_button("Tải danh sách giáp ranh", json.dumps(neighbors, ensure_ascii=False, indent=2),
                        "neighbors.json", "application/json")
     st.warning("Nguồn có vùng mã 31 ở miền Tây bị ghi nhầm Lạng Sơn. Ứng dụng hiệu chỉnh tên thành Đồng Tháp khi đọc; giữ nguyên tệp gốc. Quan hệ giáp ranh là kết quả hình học, chưa phải danh mục địa giới đã được thẩm định.")
     if st.session_state.comparison:
@@ -167,7 +223,7 @@ with theory_tab:
 2. **Forward Checking:** sau khi gán màu, xóa màu đó khỏi miền các hàng xóm chưa gán. Miền rỗng khiến nhánh bị loại ngay.
 3. **AC-3 (MAC):** với mỗi cung A → B, xóa màu của A nếu không có màu khác trong miền B hỗ trợ; khi miền A đổi, đưa các cung liên quan vào hàng đợi. Lặp lại sau mỗi lần gán.
 
-Cả ba dùng **MRV** (chọn tỉnh có ít màu hợp lệ nhất), hòa thì chọn tỉnh có nhiều hàng xóm chưa gán nhất. Miền được sao chép theo nhánh để khôi phục chính xác khi quay lui.
+Cả ba dùng **MRV** (chọn tỉnh có ít màu hợp lệ nhất), hòa thì chọn tỉnh có nhiều hàng xóm chưa gán nhất. Khi gán, ưu tiên màu hợp lệ đang được dùng ít nhất để phân bố màu đều hơn; không bảo đảm số tỉnh mỗi màu bằng nhau. Miền được sao chép theo nhánh để khôi phục chính xác khi quay lui.
 
 **Vì sao AC-3 đơn lẻ chưa đủ?** Tam giác có miền {đỏ, xanh} ở cả ba đỉnh vẫn nhất quán cung, nhưng không thể tô bằng hai màu. Vì vậy không được lấy tùy ý màu đầu tiên sau AC-3.
 

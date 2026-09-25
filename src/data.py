@@ -4,8 +4,10 @@ from functools import lru_cache
 from pathlib import Path
 from shapely.geometry import shape, mapping
 
-COLORS = ["Red", "Green", "Blue", "Yellow", "Purple"]
-COLOR_HEX = dict(zip(COLORS, ["#ef6461", "#43aa8b", "#4d8fdf", "#f6ce60", "#a879d8"]))
+COLORS = ["Red", "Green", "Blue", "Yellow", "Purple",
+          "Orange", "Pink", "Cyan", "Brown", "Olive"]
+COLOR_HEX = dict(zip(COLORS, ["#ef6461", "#43aa8b", "#4d8fdf", "#f6ce60", "#a879d8",
+                              "#f28e2b", "#ed8fbc", "#36c9d0", "#9c6644", "#899b32"]))
 DATA_PATH = Path(__file__).resolve().parents[1] / "assets" / "vietnam_provinces.geojson"
 
 
